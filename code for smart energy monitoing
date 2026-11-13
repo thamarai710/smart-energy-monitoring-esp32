@@ -1,0 +1,164 @@
+#define BLYNK_TEMPLATE_NAME "energy"
+#define BLYNK_AUTH_TOKEN "d9_Z0WYPljsP-m5CpilhnMHXpreKc9Yt"            #define BLYNK_PRINT Serial
+
+#include "EmonLib.h"
+#include <EEPROM.h>
+#include <WiFi.h>
+#include <BlynkSimpleEsp32.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+const char* telegramBotToken = "YOUR_BOT_TOKEN";
+const char* telegramChatID   = "YOUR_CHAT_ID";
+
+const float vCalibration = 42.5;
+const float currCalibration = 1.80;
+
+char auth[] = "d9_Z0WYPljsP-m5CpilhnMHXpreKc9Yt";
+char ssid[] = "oppo";
+char pass[] = "1234567890";
+
+EnergyMonitor emon;
+BlynkTimer timer;
+
+float kWh = 0.0;
+float voltage = 0.0;
+float current = 0.0;
+float power = 0.0;
+
+unsigned long lastMillis = 0;
+
+void sendTelegramMessage(String message)
+{
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    HTTPClient http;
+
+    String url =
+      "https://api.telegram.org/bot" +
+      String(telegramBotToken) +
+      "/sendMessage?chat_id=" +
+      String(telegramChatID) +
+      "&text=" + message;
+
+    http.begin(url);
+    http.GET();
+    http.end();
+  }
+}
+
+void readEnergyMeter()
+{
+  emon.calcVI(20, 2000);
+
+  voltage = emon.Vrms;
+  current = emon.Irms;
+  power = voltage * current;
+
+  unsigned long currentMillis = millis();
+  float hours = (currentMillis - lastMillis) / 3600000.0;
+  lastMillis = currentMillis;
+
+  kWh += (power * hours) / 1000.0;
+
+  EEPROM.put(0, kWh);
+  EEPROM.commit();
+
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+  lcd.print("V:");
+  lcd.print(voltage, 1);
+  lcd.print(" I:");
+  lcd.print(current, 2);
+
+  lcd.setCursor(0, 1);
+  lcd.print("P:");
+  lcd.print(power, 0);
+  lcd.print("W");
+
+  Blynk.virtualWrite(V0, voltage);
+  Blynk.virtualWrite(V1, current);
+  Blynk.virtualWrite(V2, power);
+  Blynk.virtualWrite(V3, kWh);
+
+  Serial.println("-------------");
+  Serial.print("Voltage : ");
+  Serial.println(voltage);
+
+  Serial.print("Current : ");
+  Serial.println(current);
+
+  Serial.print("Power   : ");
+  Serial.println(power);
+
+  Serial.print("Energy  : ");
+  Serial.println(kWh);
+
+  if (power > 1000)
+  {
+    sendTelegramMessage("Warning! High Power Consumption");
+  }
+}
+
+BLYNK_WRITE(V4)
+{
+  int resetValue = param.asInt();
+
+  if (resetValue == 1)
+  {
+    kWh = 0;
+
+    EEPROM.put(0, kWh);
+    EEPROM.commit();
+
+    sendTelegramMessage("Energy Meter Reset");
+  }
+}
+
+void setup()
+{
+  Serial.begin(115200);
+
+  EEPROM.begin(512);
+  EEPROM.get(0, kWh);
+
+  lcd.init();
+  lcd.backlight();
+
+  lcd.setCursor(0, 0);
+  lcd.print("IoT Energy Meter");
+
+  WiFi.begin(ssid, pass);
+
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    delay(500);
+    Serial.print(".");
+  }
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("WiFi Connected");
+
+  Blynk.begin(auth, ssid, pass);
+
+  emon.voltage(35, vCalibration, 1.7);
+  emon.current(34, currCalibration);
+
+  lastMillis = millis();
+
+  timer.setInterval(5000L, readEnergyMeter);
+
+  sendTelegramMessage("ESP32 Energy Meter Started");
+}
+
+void loop()
+{
+  Blynk.run();
+  timer.run();
+}
